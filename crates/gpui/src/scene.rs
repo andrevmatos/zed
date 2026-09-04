@@ -624,7 +624,7 @@ impl From<Quad> for Primitive {
 /// Maximum number of GPU blur downsample/upsample levels a backdrop blur rect may request.
 pub const MAX_BACKDROP_BLUR_KERNEL_LEVELS: u32 = 5;
 
-const BACKDROP_BLUR_RADIUS_PER_KERNEL_LEVEL: f32 = 5.;
+const BACKDROP_BLUR_RADIUS_PER_KERNEL_LEVEL: f32 = 4.;
 
 #[derive(Debug, Copy, Clone)]
 #[repr(C)]

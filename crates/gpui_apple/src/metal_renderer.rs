@@ -497,7 +497,7 @@ impl MetalRenderer {
         self.backdrop_blur_snapshot_texture = Some(new_texture(width, height));
         self.backdrop_blur_textures = (0..BACKDROP_BLUR_TEXTURE_LEVELS)
             .map(|level| {
-                let divisor = 2u64.saturating_pow((level + 1) as u32);
+                let divisor = 2u64.saturating_pow(level as u32);
                 new_texture((width / divisor).max(1), (height / divisor).max(1))
             })
             .collect();

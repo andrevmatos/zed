@@ -1786,7 +1786,7 @@ fn create_blur_textures(
 ) -> Result<Vec<BlurTexture>> {
     let mut textures = Vec::with_capacity(BLUR_TEXTURE_LEVELS);
     for level in 0..BLUR_TEXTURE_LEVELS {
-        let divisor = 2u32.saturating_pow((level + 1) as u32);
+        let divisor = 2u32.saturating_pow(level as u32);
         let texture_width = (width / divisor).max(1);
         let texture_height = (height / divisor).max(1);
         textures.push(create_blur_texture(device, texture_width, texture_height)?);

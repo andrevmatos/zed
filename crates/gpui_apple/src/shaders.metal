@@ -488,11 +488,15 @@ fragment float4 backdrop_blur_downsample_fragment(
       address::clamp_to_edge);
   float2 texel = params->texel_size;
   float2 uv = input.texture_position;
-  float4 color = source_texture.sample(texture_sampler, uv) * 0.5;
-  color += source_texture.sample(texture_sampler, uv + texel * float2(-1., -1.)) * 0.125;
-  color += source_texture.sample(texture_sampler, uv + texel * float2(1., -1.)) * 0.125;
-  color += source_texture.sample(texture_sampler, uv + texel * float2(-1., 1.)) * 0.125;
-  color += source_texture.sample(texture_sampler, uv + texel * float2(1., 1.)) * 0.125;
+  float4 color = source_texture.sample(texture_sampler, uv) * 0.25;
+  color += source_texture.sample(texture_sampler, uv + texel * float2(-1., 0.)) * 0.125;
+  color += source_texture.sample(texture_sampler, uv + texel * float2(1., 0.)) * 0.125;
+  color += source_texture.sample(texture_sampler, uv + texel * float2(0., -1.)) * 0.125;
+  color += source_texture.sample(texture_sampler, uv + texel * float2(0., 1.)) * 0.125;
+  color += source_texture.sample(texture_sampler, uv + texel * float2(-1., -1.)) * 0.0625;
+  color += source_texture.sample(texture_sampler, uv + texel * float2(1., -1.)) * 0.0625;
+  color += source_texture.sample(texture_sampler, uv + texel * float2(-1., 1.)) * 0.0625;
+  color += source_texture.sample(texture_sampler, uv + texel * float2(1., 1.)) * 0.0625;
   return clamp_premultiplied(color);
 }
 
