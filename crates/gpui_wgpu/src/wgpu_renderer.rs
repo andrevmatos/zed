@@ -1444,6 +1444,7 @@ impl WgpuRenderer {
 
             for batch in scene.batches() {
                 match batch {
+                    PrimitiveBatch::BackdropBlurRects(_range) => {}
                     PrimitiveBatch::Quads(range) => self.draw_instances(
                         &instance_bindings.quads,
                         &self.resources().pipelines.quads,
