@@ -9381,7 +9381,7 @@ impl Render for Workspace {
                     .child(
                         div()
                             .id("workspace")
-                            .bg(colors.background)
+                            .bg(colors.panel_overlay_background)
                             .relative()
                             .flex_1()
                             .w_full()
