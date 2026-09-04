@@ -812,18 +812,20 @@ impl DirectXRenderer {
                 .OMSetRenderTargets(Some(slice::from_ref(&resources.render_target_view)), None);
         }
 
-        self.pipelines.blur_rect_pipeline.draw_range_with_texture_resources(
-            &devices.device_context,
-            self.globals
-                .batch_params_buffer
-                .as_ref()
-                .context("batch params buffer missing")?,
-            None,
-            &fragment_textures,
-            slice::from_ref(&self.globals.sampler),
-            start as u32,
-            len as u32,
-        )
+        self.pipelines
+            .blur_rect_pipeline
+            .draw_range_with_texture_resources(
+                &devices.device_context,
+                self.globals
+                    .batch_params_buffer
+                    .as_ref()
+                    .context("batch params buffer missing")?,
+                None,
+                &fragment_textures,
+                slice::from_ref(&self.globals.sampler),
+                start as u32,
+                len as u32,
+            )
     }
 
     fn draw_paths_to_intermediate(&mut self, paths: &[Path<ScaledPixels>]) -> Result<()> {
@@ -1772,9 +1774,7 @@ fn create_blur_snapshot_texture(
     };
 
     let mut shader_resource_view = None;
-    unsafe {
-        device.CreateShaderResourceView(&texture, None, Some(&mut shader_resource_view))?
-    };
+    unsafe { device.CreateShaderResourceView(&texture, None, Some(&mut shader_resource_view))? };
 
     Ok((texture, shader_resource_view))
 }

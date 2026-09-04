@@ -9713,6 +9713,7 @@ impl Render for Workspace {
                                             window,
                                             cx,
                                         )),
+                                }
                             })
                             .when(zoomed_panel_has_backdrop_blur, |this| {
                                 let background = colors.background;
@@ -9735,12 +9736,9 @@ impl Render for Workspace {
                                         Some(DockPosition::Left) => blur.right_2().border_r_1(),
                                         Some(DockPosition::Right) => blur.left_2().border_l_1(),
                                         Some(DockPosition::Bottom) => blur.top_2().border_t_1(),
-                                        None => blur
-                                            .top_2()
-                                            .bottom_2()
-                                            .left_2()
-                                            .right_2()
-                                            .border_1(),
+                                        None => {
+                                            blur.top_2().bottom_2().left_2().right_2().border_1()
+                                        }
                                     }
                                 };
                                 this.child(blur)
