@@ -916,15 +916,23 @@ float4 blur_upsample_fragment(BlurPassVertexOutput input): SV_Target {
     float2 texel = 1.0 / float2(texture_width, texture_height);
     float2 uv = input.texture_position;
 
-    float4 color = 0.0;
-    color += t_sprite.Sample(s_sprite, uv + texel * float2(-1.0,  0.0)) * 0.125;
-    color += t_sprite.Sample(s_sprite, uv + texel * float2( 1.0,  0.0)) * 0.125;
-    color += t_sprite.Sample(s_sprite, uv + texel * float2( 0.0, -1.0)) * 0.125;
-    color += t_sprite.Sample(s_sprite, uv + texel * float2( 0.0,  1.0)) * 0.125;
-    color += t_sprite.Sample(s_sprite, uv + texel * float2(-1.0, -1.0)) * 0.125;
-    color += t_sprite.Sample(s_sprite, uv + texel * float2( 1.0, -1.0)) * 0.125;
-    color += t_sprite.Sample(s_sprite, uv + texel * float2(-1.0,  1.0)) * 0.125;
-    color += t_sprite.Sample(s_sprite, uv + texel * float2( 1.0,  1.0)) * 0.125;
+    float4 color = t_sprite.Sample(s_sprite, uv) * 0.125;
+    color += t_sprite.Sample(s_sprite, uv + texel * float2(-1.0,  0.0)) * 0.0625;
+    color += t_sprite.Sample(s_sprite, uv + texel * float2( 1.0,  0.0)) * 0.0625;
+    color += t_sprite.Sample(s_sprite, uv + texel * float2( 0.0, -1.0)) * 0.0625;
+    color += t_sprite.Sample(s_sprite, uv + texel * float2( 0.0,  1.0)) * 0.0625;
+    color += t_sprite.Sample(s_sprite, uv + texel * float2(-1.0, -1.0)) * 0.0625;
+    color += t_sprite.Sample(s_sprite, uv + texel * float2( 1.0, -1.0)) * 0.0625;
+    color += t_sprite.Sample(s_sprite, uv + texel * float2(-1.0,  1.0)) * 0.0625;
+    color += t_sprite.Sample(s_sprite, uv + texel * float2( 1.0,  1.0)) * 0.0625;
+    color += t_sprite.Sample(s_sprite, uv + texel * float2(-2.0,  0.0)) * 0.046875;
+    color += t_sprite.Sample(s_sprite, uv + texel * float2( 2.0,  0.0)) * 0.046875;
+    color += t_sprite.Sample(s_sprite, uv + texel * float2( 0.0, -2.0)) * 0.046875;
+    color += t_sprite.Sample(s_sprite, uv + texel * float2( 0.0,  2.0)) * 0.046875;
+    color += t_sprite.Sample(s_sprite, uv + texel * float2(-2.0, -2.0)) * 0.046875;
+    color += t_sprite.Sample(s_sprite, uv + texel * float2( 2.0, -2.0)) * 0.046875;
+    color += t_sprite.Sample(s_sprite, uv + texel * float2(-2.0,  2.0)) * 0.046875;
+    color += t_sprite.Sample(s_sprite, uv + texel * float2( 2.0,  2.0)) * 0.046875;
     return clamp_premultiplied(color);
 }
 
