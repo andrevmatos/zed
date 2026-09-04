@@ -9716,14 +9716,13 @@ impl Render for Workspace {
                                 }
                             })
                             .when(zoomed_panel_has_backdrop_blur, |this| {
-                                let background = colors.background;
                                 let blur = canvas(
                                     |_, _, _| (),
-                                    move |bounds, _, window, _| {
+                                    |bounds, _, window, _| {
                                         window.paint_backdrop_blur_rect(
                                             bounds,
                                             Default::default(),
-                                            BackdropBlurEffect::new(px(20.)).tint(background),
+                                            BackdropBlurEffect::new(px(20.)),
                                         );
                                     },
                                 )
