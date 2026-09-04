@@ -453,6 +453,12 @@ struct BackdropBlurPassParams {
   float _pad;
 };
 
+float4 clamp_premultiplied(float4 color) {
+  color.a = saturate(color.a);
+  color.rgb = clamp(color.rgb, 0.0, float3(color.a));
+  return color;
+}
+
 struct BackdropBlurPassVertexOutput {
   float4 position [[position]];
   float2 texture_position;
@@ -470,7 +476,7 @@ vertex BackdropBlurPassVertexOutput backdrop_blur_pass_vertex(
       unit_vertex};
 }
 
-fragment float4 backdrop_blur_pass_fragment(
+fragment float4 backdrop_blur_downsample_fragment(
     BackdropBlurPassVertexOutput input [[stage_in]],
     constant BackdropBlurPassParams *params
     [[buffer(BackdropBlurInputIndex_Params)]],
@@ -480,24 +486,38 @@ fragment float4 backdrop_blur_pass_fragment(
       mag_filter::linear,
       min_filter::linear,
       address::clamp_to_edge);
-  float sigma = max(params->radius * 0.5, 0.5);
-  float sample_distance = max(params->radius * 0.25, 1.0);
-  float4 color = source_texture.sample(texture_sampler, input.texture_position)
-      * gaussian(0., sigma);
-  float weight = gaussian(0., sigma);
+  float2 texel = params->texel_size;
+  float2 uv = input.texture_position;
+  float4 color = source_texture.sample(texture_sampler, uv) * 0.5;
+  color += source_texture.sample(texture_sampler, uv + texel * float2(-1., -1.)) * 0.125;
+  color += source_texture.sample(texture_sampler, uv + texel * float2(1., -1.)) * 0.125;
+  color += source_texture.sample(texture_sampler, uv + texel * float2(-1., 1.)) * 0.125;
+  color += source_texture.sample(texture_sampler, uv + texel * float2(1., 1.)) * 0.125;
+  return clamp_premultiplied(color);
+}
 
-  for (int index = 1; index <= 4; index++) {
-    float offset = sample_distance * float(index);
-    float sample_weight = gaussian(offset, sigma);
-    float2 delta = params->direction * params->texel_size * offset;
-    color += source_texture.sample(texture_sampler, input.texture_position + delta)
-        * sample_weight;
-    color += source_texture.sample(texture_sampler, input.texture_position - delta)
-        * sample_weight;
-    weight += sample_weight * 2.;
-  }
-
-  return color / weight;
+fragment float4 backdrop_blur_upsample_fragment(
+    BackdropBlurPassVertexOutput input [[stage_in]],
+    constant BackdropBlurPassParams *params
+    [[buffer(BackdropBlurInputIndex_Params)]],
+    texture2d<float> source_texture
+    [[texture(BackdropBlurTextureIndex_BackdropTexture)]]) {
+  constexpr sampler texture_sampler(
+      mag_filter::linear,
+      min_filter::linear,
+      address::clamp_to_edge);
+  float2 texel = params->texel_size;
+  float2 uv = input.texture_position;
+  float4 color = 0.;
+  color += source_texture.sample(texture_sampler, uv + texel * float2(-1., 0.)) * 0.125;
+  color += source_texture.sample(texture_sampler, uv + texel * float2(1., 0.)) * 0.125;
+  color += source_texture.sample(texture_sampler, uv + texel * float2(0., -1.)) * 0.125;
+  color += source_texture.sample(texture_sampler, uv + texel * float2(0., 1.)) * 0.125;
+  color += source_texture.sample(texture_sampler, uv + texel * float2(-1., -1.)) * 0.125;
+  color += source_texture.sample(texture_sampler, uv + texel * float2(1., -1.)) * 0.125;
+  color += source_texture.sample(texture_sampler, uv + texel * float2(-1., 1.)) * 0.125;
+  color += source_texture.sample(texture_sampler, uv + texel * float2(1., 1.)) * 0.125;
+  return clamp_premultiplied(color);
 }
 
 struct BackdropBlurCompositeVertexOutput {
@@ -536,12 +556,6 @@ vertex BackdropBlurCompositeVertexOutput backdrop_blur_composite_vertex(
       device_position,
       position / float2(viewport_size->width, viewport_size->height),
       {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w}};
-}
-
-float4 clamp_premultiplied(float4 color) {
-  color.a = saturate(color.a);
-  color.rgb = clamp(color.rgb, 0.0, float3(color.a));
-  return color;
 }
 
 float4 over_straight_on_premultiplied(float4 below, float4 above) {

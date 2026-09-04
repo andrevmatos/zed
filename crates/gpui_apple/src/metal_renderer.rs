@@ -7,8 +7,9 @@ use cocoa::{
     quartzcore::AutoresizingMask,
 };
 use gpui::{
-    AtlasTextureId, BackdropBlurRect, Background, Bounds, ContentMask, DevicePixels, PaintSurface,
-    Path, Point, PrimitiveBatch, ScaledPixels, Scene, Size, point, size,
+    AtlasTextureId, BackdropBlurRect, Background, Bounds, ContentMask, DevicePixels,
+    MAX_BACKDROP_BLUR_KERNEL_LEVELS, PaintSurface, Path, Point, PrimitiveBatch, ScaledPixels,
+    Scene, Size, point, size,
 };
 #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
 use image::RgbaImage;
@@ -37,6 +38,7 @@ const SHADERS_SOURCE_FILE: &str = include_str!(concat!(env!("OUT_DIR"), "/stitch
 // Use 4x MSAA, all devices support it.
 // https://developer.apple.com/documentation/metal/mtldevice/1433355-supportstexturesamplecount
 const PATH_SAMPLE_COUNT: u32 = 4;
+const BACKDROP_BLUR_TEXTURE_LEVELS: usize = MAX_BACKDROP_BLUR_KERNEL_LEVELS as usize;
 /// Metal requires the offset a buffer is bound at to be 256-byte aligned.
 const INSTANCE_BUFFER_ALIGNMENT: usize = 256;
 const MAX_INSTANCE_BUFFER_SIZE: usize = 256 * 1024 * 1024;
@@ -126,7 +128,8 @@ pub struct MetalRenderer {
     monochrome_sprites_pipeline_state: metal::RenderPipelineState,
     polychrome_sprites_pipeline_state: metal::RenderPipelineState,
     surfaces_pipeline_state: metal::RenderPipelineState,
-    backdrop_blur_pass_pipeline_state: metal::RenderPipelineState,
+    backdrop_blur_downsample_pipeline_state: metal::RenderPipelineState,
+    backdrop_blur_upsample_pipeline_state: metal::RenderPipelineState,
     backdrop_blur_composite_pipeline_state: metal::RenderPipelineState,
     unit_vertices: metal::Buffer,
     #[allow(clippy::arc_with_non_send_sync)]
@@ -136,8 +139,7 @@ pub struct MetalRenderer {
     path_intermediate_texture: Option<metal::Texture>,
     path_intermediate_msaa_texture: Option<metal::Texture>,
     backdrop_blur_snapshot_texture: Option<metal::Texture>,
-    backdrop_blur_horizontal_texture: Option<metal::Texture>,
-    backdrop_blur_texture: Option<metal::Texture>,
+    backdrop_blur_textures: Vec<metal::Texture>,
     path_sample_count: u32,
     /// Offscreen render target reused across `render_scene` calls when
     /// rendering headlessly without reading pixels back.
@@ -327,8 +329,18 @@ impl MetalRenderer {
             "surface_fragment",
             MTLPixelFormat::BGRA8Unorm,
         );
-        let backdrop_blur_pass_pipeline_state =
-            build_backdrop_blur_pass_pipeline_state(&device, &library, MTLPixelFormat::BGRA8Unorm);
+        let backdrop_blur_downsample_pipeline_state = build_backdrop_blur_pass_pipeline_state(
+            &device,
+            &library,
+            "backdrop_blur_downsample_fragment",
+            MTLPixelFormat::BGRA8Unorm,
+        );
+        let backdrop_blur_upsample_pipeline_state = build_backdrop_blur_pass_pipeline_state(
+            &device,
+            &library,
+            "backdrop_blur_upsample_fragment",
+            MTLPixelFormat::BGRA8Unorm,
+        );
         let backdrop_blur_composite_pipeline_state = build_backdrop_blur_composite_pipeline_state(
             &device,
             &library,
@@ -356,7 +368,8 @@ impl MetalRenderer {
             monochrome_sprites_pipeline_state,
             polychrome_sprites_pipeline_state,
             surfaces_pipeline_state,
-            backdrop_blur_pass_pipeline_state,
+            backdrop_blur_downsample_pipeline_state,
+            backdrop_blur_upsample_pipeline_state,
             backdrop_blur_composite_pipeline_state,
             unit_vertices,
             instance_buffer_pool,
@@ -365,8 +378,7 @@ impl MetalRenderer {
             path_intermediate_texture: None,
             path_intermediate_msaa_texture: None,
             backdrop_blur_snapshot_texture: None,
-            backdrop_blur_horizontal_texture: None,
-            backdrop_blur_texture: None,
+            backdrop_blur_textures: Vec::new(),
             path_sample_count: PATH_SAMPLE_COUNT,
             #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
             headless_render_target: None,
@@ -452,8 +464,7 @@ impl MetalRenderer {
     fn update_backdrop_blur_textures(&mut self, size: Size<DevicePixels>) {
         if size.width.0 <= 0 || size.height.0 <= 0 {
             self.backdrop_blur_snapshot_texture = None;
-            self.backdrop_blur_horizontal_texture = None;
-            self.backdrop_blur_texture = None;
+            self.backdrop_blur_textures.clear();
             return;
         }
 
@@ -462,12 +473,16 @@ impl MetalRenderer {
         if self
             .backdrop_blur_snapshot_texture
             .as_ref()
-            .is_some_and(|texture| texture.width() == width && texture.height() == height)
+            .is_some_and(|texture| {
+                texture.width() == width
+                    && texture.height() == height
+                    && self.backdrop_blur_textures.len() == BACKDROP_BLUR_TEXTURE_LEVELS
+            })
         {
             return;
         }
 
-        let new_texture = || {
+        let new_texture = |width, height| {
             let descriptor = metal::TextureDescriptor::new();
             descriptor.set_width(width);
             descriptor.set_height(height);
@@ -479,9 +494,13 @@ impl MetalRenderer {
             self.device.new_texture(&descriptor)
         };
 
-        self.backdrop_blur_snapshot_texture = Some(new_texture());
-        self.backdrop_blur_horizontal_texture = Some(new_texture());
-        self.backdrop_blur_texture = Some(new_texture());
+        self.backdrop_blur_snapshot_texture = Some(new_texture(width, height));
+        self.backdrop_blur_textures = (0..BACKDROP_BLUR_TEXTURE_LEVELS)
+            .map(|level| {
+                let divisor = 2u64.saturating_pow((level + 1) as u32);
+                new_texture((width / divisor).max(1), (height / divisor).max(1))
+            })
+            .collect();
     }
 
     pub fn update_transparency(&mut self, transparent: bool) {
@@ -829,14 +848,6 @@ impl MetalRenderer {
             .backdrop_blur_snapshot_texture
             .as_ref()
             .context("missing backdrop blur snapshot texture")?;
-        let horizontal_texture = self
-            .backdrop_blur_horizontal_texture
-            .as_ref()
-            .context("missing backdrop blur horizontal texture")?;
-        let backdrop_blur_texture = self
-            .backdrop_blur_texture
-            .as_ref()
-            .context("missing backdrop blur texture")?;
 
         let blit = command_buffer.new_blit_command_encoder();
         blit.copy_from_texture(
@@ -856,48 +867,105 @@ impl MetalRenderer {
         );
         blit.end_encoding();
 
-        let blur_radius = backdrop_blur_rects
-            .iter()
-            .map(|rect| rect.blur_radius.0)
-            .fold(0., f32::max);
-        if blur_radius > 0. {
+        let mut run_start = 0;
+        while run_start < backdrop_blur_rects.len() {
+            let kernel_levels = backdrop_blur_rects[run_start].effective_kernel_levels() as usize;
+            let run_end = backdrop_blur_rects[run_start..]
+                .iter()
+                .position(|rect| rect.effective_kernel_levels() as usize != kernel_levels)
+                .map_or(backdrop_blur_rects.len(), |offset| run_start + offset);
+
+            if kernel_levels > 0 {
+                self.build_backdrop_blur_texture(command_buffer, kernel_levels)?;
+            }
+            self.composite_backdrop_blur_rects(
+                &backdrop_blur_rects[run_start..run_end],
+                start + run_start,
+                instance_binding,
+                command_buffer,
+                target_texture,
+                viewport_size,
+                kernel_levels,
+            )?;
+            run_start = run_end;
+        }
+
+        Ok(new_command_encoder_for_texture(
+            command_buffer,
+            target_texture,
+            viewport_size,
+            None,
+        ))
+    }
+
+    fn build_backdrop_blur_texture(
+        &self,
+        command_buffer: &metal::CommandBufferRef,
+        kernel_levels: usize,
+    ) -> Result<()> {
+        let snapshot_texture = self
+            .backdrop_blur_snapshot_texture
+            .as_ref()
+            .context("missing backdrop blur snapshot texture")?;
+        let blur_levels = &self.backdrop_blur_textures;
+        let levels = kernel_levels.min(blur_levels.len());
+
+        let mut source_texture = snapshot_texture.as_ref();
+        for target_texture in blur_levels.iter().take(levels) {
             let params = BackdropBlurPassParams {
                 texel_size: [
-                    1. / snapshot_texture.width() as f32,
-                    1. / snapshot_texture.height() as f32,
+                    1. / source_texture.width() as f32,
+                    1. / source_texture.height() as f32,
                 ],
-                direction: [1., 0.],
-                radius: blur_radius,
-                _pad: 0.,
+                ..Default::default()
             };
             self.draw_backdrop_blur_pass(
                 command_buffer,
-                snapshot_texture,
-                horizontal_texture,
-                viewport_size,
+                &self.backdrop_blur_downsample_pipeline_state,
+                source_texture,
+                target_texture,
                 &params,
             );
+            source_texture = target_texture.as_ref();
+        }
 
+        for level in (1..levels).rev() {
+            let source_texture = blur_levels[level].as_ref();
+            let target_texture = blur_levels[level - 1].as_ref();
             let params = BackdropBlurPassParams {
                 texel_size: [
-                    1. / horizontal_texture.width() as f32,
-                    1. / horizontal_texture.height() as f32,
+                    1. / source_texture.width() as f32,
+                    1. / source_texture.height() as f32,
                 ],
-                direction: [0., 1.],
-                radius: blur_radius,
-                _pad: 0.,
+                ..Default::default()
             };
             self.draw_backdrop_blur_pass(
                 command_buffer,
-                horizontal_texture,
-                backdrop_blur_texture,
-                viewport_size,
+                &self.backdrop_blur_upsample_pipeline_state,
+                source_texture,
+                target_texture,
                 &params,
             );
         }
+        Ok(())
+    }
 
-        let blurred_texture = if blur_radius > 0. {
-            backdrop_blur_texture
+    fn composite_backdrop_blur_rects(
+        &self,
+        backdrop_blur_rects: &[BackdropBlurRect],
+        start: usize,
+        instance_binding: &InstanceBinding,
+        command_buffer: &metal::CommandBufferRef,
+        target_texture: &metal::TextureRef,
+        viewport_size: Size<DevicePixels>,
+        kernel_levels: usize,
+    ) -> Result<()> {
+        let snapshot_texture = self
+            .backdrop_blur_snapshot_texture
+            .as_ref()
+            .context("missing backdrop blur snapshot texture")?;
+        let blurred_texture = if kernel_levels > 0 {
+            &self.backdrop_blur_textures[0]
         } else {
             snapshot_texture
         };
@@ -939,24 +1007,29 @@ impl MetalRenderer {
             backdrop_blur_rects.len() as u64,
             start as u64,
         );
-        Ok(command_encoder)
+        command_encoder.end_encoding();
+        Ok(())
     }
 
     fn draw_backdrop_blur_pass(
         &self,
         command_buffer: &metal::CommandBufferRef,
+        pipeline_state: &metal::RenderPipelineState,
         source_texture: &metal::TextureRef,
         target_texture: &metal::TextureRef,
-        viewport_size: Size<DevicePixels>,
         params: &BackdropBlurPassParams,
     ) {
+        let target_size = size(
+            DevicePixels(target_texture.width() as i32),
+            DevicePixels(target_texture.height() as i32),
+        );
         let command_encoder = new_command_encoder_for_texture(
             command_buffer,
             target_texture,
-            viewport_size,
+            target_size,
             Some(metal::MTLClearColor::new(0., 0., 0., 0.)),
         );
-        command_encoder.set_render_pipeline_state(&self.backdrop_blur_pass_pipeline_state);
+        command_encoder.set_render_pipeline_state(pipeline_state);
         command_encoder.set_vertex_buffer(
             BackdropBlurInputIndex::Vertices as u64,
             Some(&self.unit_vertices),
@@ -964,8 +1037,8 @@ impl MetalRenderer {
         );
         command_encoder.set_vertex_bytes(
             BackdropBlurInputIndex::ViewportSize as u64,
-            mem::size_of_val(&viewport_size) as u64,
-            &viewport_size as *const Size<DevicePixels> as *const _,
+            mem::size_of_val(&target_size) as u64,
+            &target_size as *const Size<DevicePixels> as *const _,
         );
         command_encoder.set_fragment_bytes(
             BackdropBlurInputIndex::Params as u64,
@@ -1543,13 +1616,14 @@ fn build_pipeline_state(
 fn build_backdrop_blur_pass_pipeline_state(
     device: &metal::DeviceRef,
     library: &metal::LibraryRef,
+    fragment_fn_name: &str,
     pixel_format: metal::MTLPixelFormat,
 ) -> metal::RenderPipelineState {
     let vertex_fn = library
         .get_function("backdrop_blur_pass_vertex", None)
         .expect("error locating backdrop blur pass vertex function");
     let fragment_fn = library
-        .get_function("backdrop_blur_pass_fragment", None)
+        .get_function(fragment_fn_name, None)
         .expect("error locating backdrop blur pass fragment function");
 
     let descriptor = metal::RenderPipelineDescriptor::new();
@@ -1865,6 +1939,7 @@ enum BackdropBlurTextureIndex {
     OriginalTexture = 1,
 }
 
+#[derive(Default)]
 #[repr(C)]
 struct BackdropBlurPassParams {
     texel_size: [f32; 2],
