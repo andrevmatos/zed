@@ -1,0 +1,88 @@
+diff a/crates/gpui_windows/src/directx_renderer.rs b/crates/gpui_windows/src/directx_renderer.rs	(rejected hunks)
+@@ -27,7 +27,7 @@ pub(crate) const DISABLE_DIRECT_COMPOSITION: &str = "GPUI_DISABLE_DIRECT_COMPOSI
+ const RENDER_TARGET_FORMAT: DXGI_FORMAT = DXGI_FORMAT_B8G8R8A8_UNORM;
+ // This configuration is used for MSAA rendering on paths only, and it's guaranteed to be supported by DirectX 11.
+ const PATH_MULTISAMPLE_COUNT: u32 = 4;
+-const BLUR_TEXTURE_LEVELS: usize = MAX_BLUR_KERNEL_LEVELS as usize;
++const BLUR_TEXTURE_LEVELS: usize = MAX_BACKDROP_BLUR_KERNEL_LEVELS as usize;
+ 
+ pub(crate) struct FontInfo {
+     pub gamma_ratios: [f32; 4],
+@@ -360,11 +366,11 @@ impl DirectXRenderer {
+             }
+             .context(format!(
+                 "scene too large:\
+-                {} paths, {} shadows, {} quads, {} blur rects, {} underlines, {} mono, {} subpixel, {} poly, {} surfaces",
++                {} paths, {} shadows, {} quads, {} backdrop blur rects, {} underlines, {} mono, {} subpixel, {} poly, {} surfaces",
+                 scene.paths.len(),
+                 scene.shadows.len(),
+                 scene.quads.len(),
+-                scene.blur_rects.len(),
++                scene.backdrop_blur_rects.len(),
+                 scene.underlines.len(),
+                 scene.monochrome_sprites.len(),
+                 scene.subpixel_sprites.len(),
+@@ -1323,6 +1362,32 @@ impl<T> PipelineState<T> {
+         sampler: &[Option<ID3D11SamplerState>],
+         first_instance: u32,
+         instance_count: u32,
++    ) -> Result<()> {
++        let fragment_textures = [(0, texture)];
++        self.draw_range_with_texture_resources(
++            device,
++            device_context,
++            Some(texture),
++            &fragment_textures,
++            viewport,
++            global_params,
++            sampler,
++            first_instance,
++            instance_count,
++        )
++    }
++
++    fn draw_range_with_texture_resources(
++        &self,
++        device: &ID3D11Device,
++        device_context: &ID3D11DeviceContext,
++        vertex_texture: Option<&[Option<ID3D11ShaderResourceView>]>,
++        fragment_textures: &[(u32, &[Option<ID3D11ShaderResourceView>])],
++        viewport: &[D3D11_VIEWPORT],
++        global_params: &[Option<ID3D11Buffer>],
++        sampler: &[Option<ID3D11SamplerState>],
++        first_instance: u32,
++        instance_count: u32,
+     ) -> Result<()> {
+         let view = create_buffer_view_range(device, &self.buffer, first_instance, instance_count)?;
+         set_pipeline_state(
+@@ -1461,9 +1527,6 @@ fn create_resources(
+         create_path_intermediate_texture(&devices.device, width, height)?;
+     let (path_intermediate_msaa_texture, path_intermediate_msaa_view) =
+         create_path_intermediate_msaa_texture_and_view(&devices.device, width, height)?;
+-    let (blur_snapshot_texture, blur_snapshot_srv) =
+-        create_blur_snapshot_texture(&devices.device, width, height)?;
+-    let blur_textures = create_blur_textures(&devices.device, width, height)?;
+     let viewport = set_viewport(&devices.device_context, width as f32, height as f32);
+     Ok((
+         render_target,
+@@ -1554,6 +1614,20 @@ fn create_path_intermediate_msaa_texture_and_view(
+     Ok((msaa_texture, Some(msaa_view.unwrap())))
+ }
+ 
++fn create_backdrop_blur_resources(
++    device: &ID3D11Device,
++    width: u32,
++    height: u32,
++) -> Result<BackdropBlurResources> {
++    let (snapshot_texture, snapshot_srv) = create_blur_snapshot_texture(device, width, height)?;
++    let textures = create_blur_textures(device, width, height)?;
++    Ok(BackdropBlurResources {
++        snapshot_texture,
++        snapshot_srv,
++        textures,
++    })
++}
++
+ #[inline]
+ fn create_blur_snapshot_texture(
+     device: &ID3D11Device,
