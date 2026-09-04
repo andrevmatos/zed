@@ -507,6 +507,12 @@ struct BackdropBlurCompositeVertexOutput {
   float clip_distance [[clip_distance]][4];
 };
 
+struct BackdropBlurCompositeFragmentInput {
+  uint rect_id [[flat]];
+  float4 position [[position]];
+  float2 texture_position;
+};
+
 vertex BackdropBlurCompositeVertexOutput backdrop_blur_composite_vertex(
     uint unit_vertex_id [[vertex_id]],
     uint rect_id [[instance_id]],
@@ -544,7 +550,7 @@ float4 over_straight_on_premultiplied(float4 below, float4 above) {
 }
 
 fragment float4 backdrop_blur_composite_fragment(
-    BackdropBlurCompositeVertexOutput input [[stage_in]],
+    BackdropBlurCompositeFragmentInput input [[stage_in]],
     constant BackdropBlurRect *rects
     [[buffer(BackdropBlurInputIndex_Rects)]],
     texture2d<float> blurred_texture
