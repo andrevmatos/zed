@@ -27,7 +27,7 @@ pub(crate) const DISABLE_DIRECT_COMPOSITION: &str = "GPUI_DISABLE_DIRECT_COMPOSI
 const RENDER_TARGET_FORMAT: DXGI_FORMAT = DXGI_FORMAT_B8G8R8A8_UNORM;
 // This configuration is used for MSAA rendering on paths only, and it's guaranteed to be supported by DirectX 11.
 const PATH_MULTISAMPLE_COUNT: u32 = 4;
-const BLUR_TEXTURE_LEVELS: usize = MAX_BLUR_KERNEL_LEVELS as usize;
+const BLUR_TEXTURE_LEVELS: usize = MAX_BACKDROP_BLUR_KERNEL_LEVELS as usize;
 const MAX_INSTANCE_BUFFER_SIZE: usize = 256 * 1024 * 1024;
 
 pub(crate) struct FontInfo {
@@ -414,10 +414,11 @@ impl DirectXRenderer {
             .with_context(|| {
                 format!(
                     "scene too large:\
-                    {} paths, {} shadows, {} quads, {} underlines, {} mono, {} subpixel, {} poly, {} surfaces",
+                    {} paths, {} shadows, {} quads, {} backdrop blur rects, {} underlines, {} mono, {} subpixel, {} poly, {} surfaces",
                     scene.paths.len(),
                     scene.shadows.len(),
                     scene.quads.len(),
+                    scene.backdrop_blur_rects.len(),
                     scene.underlines.len(),
                     scene.monochrome_sprites.len(),
                     scene.subpixel_sprites.len(),
@@ -766,14 +767,15 @@ impl DirectXRenderer {
             unbind_shader_resources(&devices.device_context);
             devices
                 .device_context
+                .RSSetViewports(Some(slice::from_ref(&target.viewport)));
+            devices
+                .device_context
                 .OMSetRenderTargets(Some(slice::from_ref(&target.rtv)), None);
         }
 
         pipeline.draw_with_texture(
             &devices.device_context,
             slice::from_ref(source),
-            slice::from_ref(&target.viewport),
-            slice::from_ref(&self.globals.global_params_buffer),
             slice::from_ref(&self.globals.sampler),
             1,
         )
@@ -804,22 +806,24 @@ impl DirectXRenderer {
             unbind_shader_resources(&devices.device_context);
             devices
                 .device_context
+                .RSSetViewports(Some(slice::from_ref(&resources.viewport)));
+            devices
+                .device_context
                 .OMSetRenderTargets(Some(slice::from_ref(&resources.render_target_view)), None);
         }
 
-        self.pipelines
-            .blur_rect_pipeline
-            .draw_range_with_texture_resources(
-                &devices.device,
-                &devices.device_context,
-                None,
-                &fragment_textures,
-                slice::from_ref(&resources.viewport),
-                slice::from_ref(&self.globals.global_params_buffer),
-                slice::from_ref(&self.globals.sampler),
-                start as u32,
-                len as u32,
-            )
+        self.pipelines.blur_rect_pipeline.draw_range_with_texture_resources(
+            &devices.device_context,
+            self.globals
+                .batch_params_buffer
+                .as_ref()
+                .context("batch params buffer missing")?,
+            None,
+            &fragment_textures,
+            slice::from_ref(&self.globals.sampler),
+            start as u32,
+            len as u32,
+        )
     }
 
     fn draw_paths_to_intermediate(&mut self, paths: &[Path<ScaledPixels>]) -> Result<()> {
@@ -1472,6 +1476,28 @@ impl<T> PipelineState<T> {
         first_instance: u32,
         instance_count: u32,
     ) -> Result<()> {
+        let fragment_textures = [(0, texture)];
+        self.draw_range_with_texture_resources(
+            device_context,
+            batch_params_buffer,
+            Some(texture),
+            &fragment_textures,
+            sampler,
+            first_instance,
+            instance_count,
+        )
+    }
+
+    fn draw_range_with_texture_resources(
+        &self,
+        device_context: &ID3D11DeviceContext,
+        batch_params_buffer: &ID3D11Buffer,
+        vertex_texture: Option<&[Option<ID3D11ShaderResourceView>]>,
+        fragment_textures: &[(u32, &[Option<ID3D11ShaderResourceView>])],
+        sampler: &[Option<ID3D11SamplerState>],
+        first_instance: u32,
+        instance_count: u32,
+    ) -> Result<()> {
         anyhow::ensure!(
             first_instance as usize + instance_count as usize <= self.buffer_size,
             "DirectX instance range exceeds the {} buffer",
@@ -1488,9 +1514,7 @@ impl<T> PipelineState<T> {
         );
         unsafe {
             device_context.PSSetSamplers(0, Some(sampler));
-            if let Some(texture) = vertex_texture {
-                device_context.VSSetShaderResources(0, Some(texture));
-            }
+            device_context.VSSetShaderResources(0, vertex_texture);
             for (slot, texture) in fragment_textures {
                 device_context.PSSetShaderResources(*slot, Some(*texture));
             }
@@ -1705,6 +1729,113 @@ fn create_path_intermediate_msaa_texture_and_view(
     let mut msaa_view = None;
     unsafe { device.CreateRenderTargetView(&msaa_texture, None, Some(&mut msaa_view))? };
     Ok((msaa_texture, Some(msaa_view.unwrap())))
+}
+
+fn create_backdrop_blur_resources(
+    device: &ID3D11Device,
+    width: u32,
+    height: u32,
+) -> Result<BackdropBlurResources> {
+    let (snapshot_texture, snapshot_srv) = create_blur_snapshot_texture(device, width, height)?;
+    let textures = create_blur_textures(device, width, height)?;
+    Ok(BackdropBlurResources {
+        snapshot_texture,
+        snapshot_srv,
+        textures,
+    })
+}
+
+fn create_blur_snapshot_texture(
+    device: &ID3D11Device,
+    width: u32,
+    height: u32,
+) -> Result<(ID3D11Texture2D, Option<ID3D11ShaderResourceView>)> {
+    let texture = unsafe {
+        let mut output = None;
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: width,
+            Height: height,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: RENDER_TARGET_FORMAT,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+        };
+        device.CreateTexture2D(&desc, None, Some(&mut output))?;
+        output.context("creating backdrop blur snapshot texture")?
+    };
+
+    let mut shader_resource_view = None;
+    unsafe {
+        device.CreateShaderResourceView(&texture, None, Some(&mut shader_resource_view))?
+    };
+
+    Ok((texture, shader_resource_view))
+}
+
+fn create_blur_textures(
+    device: &ID3D11Device,
+    width: u32,
+    height: u32,
+) -> Result<Vec<BlurTexture>> {
+    let mut textures = Vec::with_capacity(BLUR_TEXTURE_LEVELS);
+    for level in 0..BLUR_TEXTURE_LEVELS {
+        let divisor = 2u32.saturating_pow((level + 1) as u32);
+        let texture_width = (width / divisor).max(1);
+        let texture_height = (height / divisor).max(1);
+        textures.push(create_blur_texture(device, texture_width, texture_height)?);
+    }
+    Ok(textures)
+}
+
+fn create_blur_texture(device: &ID3D11Device, width: u32, height: u32) -> Result<BlurTexture> {
+    let texture = unsafe {
+        let mut output = None;
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: width,
+            Height: height,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: RENDER_TARGET_FORMAT,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+        };
+        device.CreateTexture2D(&desc, None, Some(&mut output))?;
+        output.context("creating backdrop blur texture")?
+    };
+
+    let mut srv = None;
+    let mut rtv = None;
+    unsafe {
+        device.CreateShaderResourceView(&texture, None, Some(&mut srv))?;
+        device.CreateRenderTargetView(&texture, None, Some(&mut rtv))?;
+    }
+
+    Ok(BlurTexture {
+        _texture: texture,
+        srv,
+        rtv,
+        viewport: D3D11_VIEWPORT {
+            TopLeftX: 0.0,
+            TopLeftY: 0.0,
+            Width: width as f32,
+            Height: height as f32,
+            MinDepth: 0.0,
+            MaxDepth: 1.0,
+        },
+    })
 }
 
 #[inline]
