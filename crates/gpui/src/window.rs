@@ -6,7 +6,7 @@ use crate::Inspector;
 use crate::profiler;
 use crate::{
     Action, AnyDrag, AnyElement, AnyImageCache, AnyTooltip, AnyView, App, AppContext, Arena, Asset,
-    AsyncWindowContext, AtlasTile, AvailableSpace, Background, BorderStyle, Bounds, BoxShadow,
+    AsyncWindowContext, AtlasTile, AvailableSpace, BackdropBlurRect, Background, BorderStyle, Bounds,
     Capslock, Context, Corners, CursorHideMode, CursorStyle, Decorations, DevicePixels,
     DispatchActionListener, DispatchNodeId, DispatchTree, DisplayId, Edges, Effect, Entity,
     EntityId, EventEmitter, FileDropEvent, FontId, Global, GlobalElementId, GlyphId, GpuSpecs,
@@ -4234,6 +4234,47 @@ impl Window {
         }
     }
 
+    /// Paint a backdrop blur rectangle into the scene at the current z-index.
+    ///
+    /// The blur samples pixels already rendered behind `bounds`, so renderers may need to break the
+    /// current pass when this primitive is encountered. Prefer one blur rect for a glass surface
+    /// rather than many small blur rects. Renderers without backdrop blur support may ignore this
+    /// primitive entirely, including its tint.
+    pub fn paint_backdrop_blur_rect(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        corner_radii: Corners<Pixels>,
+        effect: BackdropBlurEffect,
+    ) {
+        self.invalidator.debug_assert_paint();
+
+        let opacity = self.element_opacity();
+        if opacity <= 0. {
+            return;
+        }
+
+        let scale_factor = self.scale_factor();
+        let blur_radius = effect.radius.scale(scale_factor);
+        if blur_radius.0 <= 0. {
+            let tint = effect.tint.opacity(opacity);
+            if tint.a > 0. {
+                self.paint_quad(fill(bounds, tint).corner_radii(corner_radii));
+            }
+            return;
+        }
+
+        self.next_frame.scene.insert_primitive(BackdropBlurRect {
+            order: 0,
+            pad: 0,
+            bounds: self.snap_bounds(bounds),
+            content_mask: self.snapped_content_mask(),
+            corner_radii: corner_radii.scale(scale_factor),
+            blur_radius,
+            opacity,
+            tint: effect.tint,
+        });
+    }
+
     fn largest_border_interior(quad: &Quad) -> Bounds<ScaledPixels> {
         let radii = &quad.corner_radii;
         let widths = &quad.border_widths;
@@ -7293,6 +7334,45 @@ pub struct PaintQuad {
     pub border_color: Hsla,
     /// The style of the quad's borders.
     pub border_style: BorderStyle,
+}
+
+/// Options for [`Window::paint_backdrop_blur_rect`].
+#[derive(Clone, Copy, Debug)]
+pub struct BackdropBlurEffect {
+    /// Approximate uniform backdrop blur radius in logical pixels.
+    ///
+    /// Non-positive values are treated as zero. Renderers may clamp large radii to a
+    /// fixed implementation limit.
+    pub radius: Pixels,
+    /// Tint color composited over the blurred backdrop.
+    pub tint: Hsla,
+}
+
+impl BackdropBlurEffect {
+    /// Create a backdrop blur effect with a uniform CSS-like radius.
+    ///
+    /// Non-positive values disable blur while still allowing a tint to be painted.
+    pub fn new(radius: Pixels) -> Self {
+        Self {
+            radius,
+            ..Self::default()
+        }
+    }
+
+    /// Set a tint color composited over the blurred backdrop.
+    pub fn tint(mut self, tint: impl Into<Hsla>) -> Self {
+        self.tint = tint.into();
+        self
+    }
+}
+
+impl Default for BackdropBlurEffect {
+    fn default() -> Self {
+        Self {
+            radius: px(20.),
+            tint: transparent_black(),
+        }
+    }
 }
 
 impl PaintQuad {
