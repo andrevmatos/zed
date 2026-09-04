@@ -9303,6 +9303,13 @@ impl Render for Workspace {
 
         let theme = cx.theme().clone();
         let colors = theme.colors();
+        let hide_workspace_content_for_zoomed_panel = self.zoomed.is_some()
+            && matches!(
+                theme.window_background_appearance(),
+                gpui::WindowBackgroundAppearance::Blurred
+                    | gpui::WindowBackgroundAppearance::MicaBackdrop
+                    | gpui::WindowBackgroundAppearance::MicaAltBackdrop
+            );
         let notification_entities = self
             .notifications
             .iter()
@@ -9381,7 +9388,7 @@ impl Render for Workspace {
                     .child(
                         div()
                             .id("workspace")
-                            .bg(colors.panel_overlay_background)
+                            .bg(colors.background)
                             .relative()
                             .flex_1()
                             .w_full()
@@ -9471,8 +9478,9 @@ impl Render for Workspace {
                                     },
                                 ))
                             })
-                            .child({
-                                match bottom_dock_layout {
+                            .when(!hide_workspace_content_for_zoomed_panel, |this| {
+                                this.child({
+                                    match bottom_dock_layout {
                                     BottomDockLayout::Full => div()
                                         .flex()
                                         .flex_col()
@@ -9706,7 +9714,8 @@ impl Render for Workspace {
                                             window,
                                             cx,
                                         )),
-                                }
+                                    }
+                                })
                             })
                             .children(self.zoomed.as_ref().and_then(|view| {
                                 let zoomed_view = view.upgrade()?;
