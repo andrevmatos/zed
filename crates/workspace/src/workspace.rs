@@ -61,12 +61,12 @@ use futures::{
 };
 use gpui::{
     Action, AnyEntity, AnyView, AnyWeakView, App, AppContext, AsyncApp, AsyncWindowContext, Axis,
-    Bounds, ClipboardItem, Context, CursorStyle, Decorations, DragMoveEvent, Entity, EntityId,
-    EventEmitter, FocusHandle, Focusable, Global, HitboxBehavior, Hsla, KeyContext, Keystroke,
-    ManagedView, MouseButton, PathPromptOptions, Point, PromptLevel, Render, ResizeEdge, Size,
-    Stateful, Subscription, SystemWindowTabController, Task, TaskExt, Tiling, WeakEntity,
-    WindowBounds, WindowHandle, WindowId, WindowOptions, actions, canvas, point, relative, size,
-    transparent_black,
+    BackdropBlurEffect, Bounds, ClipboardItem, Context, CursorStyle, Decorations, DragMoveEvent,
+    Entity, EntityId, EventEmitter, FocusHandle, Focusable, Global, HitboxBehavior, Hsla,
+    KeyContext, Keystroke, ManagedView, MouseButton, PathPromptOptions, Point, PromptLevel, Render,
+    ResizeEdge, Size, Stateful, Subscription, SystemWindowTabController, Task, TaskExt, Tiling,
+    WeakEntity, WindowBounds, WindowHandle, WindowId, WindowOptions, actions, canvas, point,
+    relative, size, transparent_black,
 };
 pub use history_manager::*;
 pub use item::{
@@ -9303,7 +9303,7 @@ impl Render for Workspace {
 
         let theme = cx.theme().clone();
         let colors = theme.colors();
-        let hide_workspace_content_for_zoomed_panel = self.zoomed.is_some()
+        let zoomed_panel_has_backdrop_blur = self.zoomed.is_some()
             && matches!(
                 theme.window_background_appearance(),
                 gpui::WindowBackgroundAppearance::Blurred
@@ -9478,9 +9478,8 @@ impl Render for Workspace {
                                     },
                                 ))
                             })
-                            .when(!hide_workspace_content_for_zoomed_panel, |this| {
-                                this.child({
-                                    match bottom_dock_layout {
+                            .child({
+                                match bottom_dock_layout {
                                     BottomDockLayout::Full => div()
                                         .flex()
                                         .flex_col()
@@ -9714,8 +9713,37 @@ impl Render for Workspace {
                                             window,
                                             cx,
                                         )),
+                            })
+                            .when(zoomed_panel_has_backdrop_blur, |this| {
+                                let background = colors.background;
+                                let blur = canvas(
+                                    |_, _, _| (),
+                                    move |bounds, _, window, _| {
+                                        window.paint_backdrop_blur_rect(
+                                            bounds,
+                                            Default::default(),
+                                            BackdropBlurEffect::new(px(20.)).tint(background),
+                                        );
+                                    },
+                                )
+                                .absolute()
+                                .inset_0();
+                                let blur = if !WorkspaceSettings::get_global(cx).zoomed_padding {
+                                    blur
+                                } else {
+                                    match self.zoomed_position {
+                                        Some(DockPosition::Left) => blur.right_2().border_r_1(),
+                                        Some(DockPosition::Right) => blur.left_2().border_l_1(),
+                                        Some(DockPosition::Bottom) => blur.top_2().border_t_1(),
+                                        None => blur
+                                            .top_2()
+                                            .bottom_2()
+                                            .left_2()
+                                            .right_2()
+                                            .border_1(),
                                     }
-                                })
+                                };
+                                this.child(blur)
                             })
                             .children(self.zoomed.as_ref().and_then(|view| {
                                 let zoomed_view = view.upgrade()?;
