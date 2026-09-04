@@ -9749,7 +9749,11 @@ impl Render for Workspace {
                                     .absolute()
                                     .overflow_hidden()
                                     .border_color(colors.border)
-                                    .bg(colors.background)
+                                    .bg(if zoomed_panel_has_backdrop_blur {
+                                        transparent_black()
+                                    } else {
+                                        colors.background
+                                    })
                                     .child(zoomed_view)
                                     .inset_0()
                                     .shadow_lg();
