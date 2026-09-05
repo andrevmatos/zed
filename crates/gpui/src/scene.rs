@@ -41,7 +41,7 @@ impl From<bool> for PaddedBool32 {
 pub struct Scene {
     pub(crate) paint_operations: Vec<PaintOperation>,
     primitive_bounds: BoundsTree<ScaledPixels>,
-    layer_stack: Vec<Layer>,
+    layer_stack: Vec<DrawOrder>,
     pub shadows: Vec<Shadow>,
     pub quads: Vec<Quad>,
     pub backdrop_blur_rects: Vec<BackdropBlurRect>,
@@ -51,11 +51,6 @@ pub struct Scene {
     pub subpixel_sprites: Vec<SubpixelSprite>,
     pub polychrome_sprites: Vec<PolychromeSprite>,
     pub surfaces: Vec<PaintSurface>,
-}
-
-struct Layer {
-    order: DrawOrder,
-    bounds: Bounds<ScaledPixels>,
 }
 
 #[expect(missing_docs)]
@@ -81,7 +76,7 @@ impl Scene {
 
     pub fn push_layer(&mut self, bounds: Bounds<ScaledPixels>) {
         let order = self.primitive_bounds.insert(bounds);
-        self.layer_stack.push(Layer { order, bounds });
+        self.layer_stack.push(order);
         self.paint_operations
             .push(PaintOperation::StartLayer(bounds));
     }
@@ -101,7 +96,11 @@ impl Scene {
             return;
         }
 
-        let order = self.draw_order_for_primitive(&primitive, clipped_bounds);
+        let order = self
+            .layer_stack
+            .last()
+            .copied()
+            .unwrap_or_else(|| self.primitive_bounds.insert(clipped_bounds));
         match &mut primitive {
             Primitive::Shadow(shadow) => {
                 shadow.order = order;
@@ -199,37 +198,6 @@ impl Scene {
             surfaces_start: 0,
             surfaces_iter: self.surfaces.iter().peekable(),
         }
-    }
-
-    fn draw_order_for_primitive(
-        &mut self,
-        primitive: &Primitive,
-        clipped_bounds: Bounds<ScaledPixels>,
-    ) -> DrawOrder {
-        if matches!(primitive, Primitive::BackdropBlurRect(_))
-            && let Some(layer) = self.layer_stack.last()
-        {
-            let blur_order = layer.order.saturating_add(1);
-            self.primitive_bounds
-                .insert_with_order(clipped_bounds, blur_order);
-
-            // A backdrop blur samples the render target as it exists at its paint position.
-            // Force subsequent primitives in the same layer to draw after the blur without
-            // changing normal same-layer batching for non-blur primitives.
-            let next_layer_order = blur_order.saturating_add(1);
-            if let Some(layer) = self.layer_stack.last_mut() {
-                self.primitive_bounds
-                    .insert_with_order(layer.bounds, next_layer_order);
-                layer.order = next_layer_order;
-            }
-
-            return blur_order;
-        }
-
-        self.layer_stack
-            .last()
-            .map(|layer| layer.order)
-            .unwrap_or_else(|| self.primitive_bounds.insert(clipped_bounds))
     }
 }
 
@@ -621,11 +589,6 @@ impl From<Quad> for Primitive {
     }
 }
 
-/// Maximum number of GPU blur downsample/upsample levels a backdrop blur rect may request.
-pub const MAX_BACKDROP_BLUR_KERNEL_LEVELS: u32 = 5;
-
-const BACKDROP_BLUR_RADIUS_PER_KERNEL_LEVEL: f32 = 4.;
-
 #[derive(Debug, Copy, Clone)]
 #[repr(C)]
 #[expect(missing_docs)]
@@ -635,38 +598,8 @@ pub struct BackdropBlurRect {
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
     pub corner_radii: Corners<ScaledPixels>,
-    pub blur_radius: ScaledPixels,
     pub opacity: f32,
-    pub tint: Hsla,
-}
-
-impl Default for BackdropBlurRect {
-    fn default() -> Self {
-        Self {
-            order: Default::default(),
-            pad: Default::default(),
-            bounds: Default::default(),
-            content_mask: Default::default(),
-            corner_radii: Default::default(),
-            blur_radius: Default::default(),
-            opacity: 1.,
-            tint: Default::default(),
-        }
-    }
-}
-
-impl BackdropBlurRect {
-    /// Returns the clamped number of blur kernel levels required by this rect.
-    pub fn effective_kernel_levels(&self) -> u32 {
-        if self.blur_radius.0 <= 0. {
-            0
-        } else {
-            let radius_levels = (self.blur_radius.0 / BACKDROP_BLUR_RADIUS_PER_KERNEL_LEVEL)
-                .ceil()
-                .max(1.) as u32;
-            radius_levels.min(MAX_BACKDROP_BLUR_KERNEL_LEVELS)
-        }
-    }
+    pub end_pad: u32,
 }
 
 impl From<BackdropBlurRect> for Primitive {

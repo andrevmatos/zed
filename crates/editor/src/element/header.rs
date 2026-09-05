@@ -46,6 +46,9 @@ pub(crate) struct StickyHeader {
 
 pub(super) struct StickyHeaders {
     pub(super) lines: Vec<StickyHeaderLine>,
+    /// Whether the stack is frosted by backdrop blur rects, in which case the
+    /// editor content must render behind it (see `EditorElement::paint`).
+    pub(super) frosted: bool,
     gutter_background: Hsla,
     content_background: Hsla,
     gutter_right_padding: Pixels,
@@ -304,10 +307,16 @@ impl EditorElement {
             return None;
         }
 
+        let gutter_background = cx.theme().colors().editor_gutter_background;
+        let content_background = self.style.background;
+        let frosted = cx.theme().uses_backdrop_blur()
+            && (gutter_background.a < 1.0 || content_background.a < 1.0);
+
         Some(StickyHeaders {
             lines,
-            gutter_background: cx.theme().colors().editor_gutter_background,
-            content_background: self.style.background,
+            frosted,
+            gutter_background,
+            content_background,
             gutter_right_padding: gutter_dimensions.right_padding,
         })
     }
@@ -423,7 +432,36 @@ impl StickyHeaders {
     ) {
         let line_height = layout.position_map.line_height;
 
-        for line in self.lines.iter_mut().rev() {
+        // With a blurred window background, frost the content behind the
+        // headers when their backgrounds are translucent.
+        //
+        // Rows are painted bottom-to-top so each row's frost samples the rows
+        // below it (a row sliding up has its text blurring underneath the row
+        // above) while the rows above composite on top of it. Each row's
+        // background is clipped to the bottom of the row above so its tint is
+        // applied exactly once over the shared frost.
+        for line_index in 0..self.lines.len() {
+            // `lines` is ordered bottom-to-top, so the line above is the next
+            // index.
+            let upper_offset = if line_index + 1 < self.lines.len() {
+                Some(self.lines[line_index + 1].offset)
+            } else {
+                None
+            };
+            let line = &mut self.lines[line_index];
+
+            if self.frosted {
+                window.paint_backdrop_blur_rect(line.hitbox.bounds, Default::default());
+            }
+
+            // When a line slides up underneath the one above it, clip its
+            // background to that line's bottom edge so the tint applies only
+            // once over the shared frost.
+            let background_top = upper_offset
+                .map(|upper_offset| line.offset.max(upper_offset + line_height))
+                .unwrap_or(line.offset);
+            let background_height = line.offset + line_height - background_top;
+
             window.paint_layer(
                 Bounds::new(
                     layout.gutter_hitbox.origin + point(Pixels::ZERO, line.offset),
@@ -431,14 +469,15 @@ impl StickyHeaders {
                 ),
                 |window| {
                     let gutter_bounds = Bounds::new(
-                        layout.gutter_hitbox.origin + point(Pixels::ZERO, line.offset),
-                        size(layout.gutter_hitbox.size.width, line_height),
+                        layout.gutter_hitbox.origin + point(Pixels::ZERO, background_top),
+                        size(layout.gutter_hitbox.size.width, background_height),
                     );
                     window.paint_quad(fill(gutter_bounds, self.gutter_background));
 
                     let text_bounds = Bounds::new(
-                        layout.position_map.text_hitbox.origin + point(Pixels::ZERO, line.offset),
-                        size(line.available_text_width, line_height),
+                        layout.position_map.text_hitbox.origin
+                            + point(Pixels::ZERO, background_top),
+                        size(line.available_text_width, background_height),
                     );
                     window.paint_quad(fill(text_bounds, self.content_background));
 

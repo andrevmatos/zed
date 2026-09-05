@@ -6350,6 +6350,16 @@ impl EditorElement {
             let dragging_minimap = self.editor.read(cx).scroll_manager.is_dragging_minimap();
 
             window.paint_layer(layout.thumb_layout.hitbox.bounds, |window| {
+                // The minimap background is always translucent (`editor_background` at 70%
+                // opacity), so with a blurred window background the main editor content
+                // showing through gets frosted. Painted before the minimap element so its
+                // translucent background quads composite over the blur.
+                if cx.theme().uses_backdrop_blur() {
+                    window.paint_backdrop_blur_rect(
+                        layout.thumb_layout.hitbox.bounds,
+                        Corners::default(),
+                    );
+                }
                 window.with_element_namespace("minimap", |window| {
                     layout.minimap.paint(window, cx);
                     if let Some(thumb_bounds) = layout.thumb_layout.thumb_bounds {
@@ -9547,27 +9557,38 @@ impl Element for EditorElement {
                 window.with_content_mask(Some(ContentMask { bounds }), |window| {
                     self.paint_mouse_listeners(layout, window, cx);
 
-                    // Mask the editor behind sticky scroll headers. Important
-                    // for transparent backgrounds.
-                    let below_sticky_headers_mask = layout
-                        .sticky_headers
-                        .as_ref()
-                        .and_then(|h| h.lines.last())
-                        .map(|last| ContentMask {
-                            bounds: Bounds {
-                                origin: point(
-                                    bounds.origin.x,
-                                    bounds.origin.y + last.offset + layout.position_map.line_height,
-                                ),
-                                size: size(
-                                    bounds.size.width,
-                                    (bounds.size.height
-                                        - last.offset
-                                        - layout.position_map.line_height)
-                                        .max(Pixels::ZERO),
-                                ),
-                            },
-                        });
+                    // Mask the editor behind sticky scroll headers so their own
+                    // background is the only thing between the chrome and the
+                    // pane background. When the headers are frosted by backdrop
+                    // blur instead, the editor content must render behind them
+                    // so the blur has something to frost.
+                    let sticky_headers_frosted =
+                        layout.sticky_headers.as_ref().is_some_and(|h| h.frosted);
+                    let below_sticky_headers_mask = if sticky_headers_frosted {
+                        None
+                    } else {
+                        layout
+                            .sticky_headers
+                            .as_ref()
+                            .and_then(|h| h.lines.first())
+                            .map(|lowest| ContentMask {
+                                bounds: Bounds {
+                                    origin: point(
+                                        bounds.origin.x,
+                                        bounds.origin.y
+                                            + lowest.offset
+                                            + layout.position_map.line_height,
+                                    ),
+                                    size: size(
+                                        bounds.size.width,
+                                        (bounds.size.height
+                                            - lowest.offset
+                                            - layout.position_map.line_height)
+                                            .max(Pixels::ZERO),
+                                    ),
+                                },
+                            })
+                    };
 
                     window.with_content_mask(below_sticky_headers_mask, |window| {
                         self.paint_background(layout, window, cx);

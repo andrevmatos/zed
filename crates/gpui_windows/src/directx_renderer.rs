@@ -27,7 +27,9 @@ pub(crate) const DISABLE_DIRECT_COMPOSITION: &str = "GPUI_DISABLE_DIRECT_COMPOSI
 const RENDER_TARGET_FORMAT: DXGI_FORMAT = DXGI_FORMAT_B8G8R8A8_UNORM;
 // This configuration is used for MSAA rendering on paths only, and it's guaranteed to be supported by DirectX 11.
 const PATH_MULTISAMPLE_COUNT: u32 = 4;
-const BLUR_TEXTURE_LEVELS: usize = MAX_BACKDROP_BLUR_KERNEL_LEVELS as usize;
+// Depth of the fixed downsample/upsample pyramid that gives backdrop blur rects their
+// blur strength: each level halves the sampling resolution.
+const BLUR_TEXTURE_LEVELS: usize = 4;
 const MAX_INSTANCE_BUFFER_SIZE: usize = 256 * 1024 * 1024;
 
 pub(crate) struct FontInfo {
@@ -389,11 +391,9 @@ impl DirectXRenderer {
             match batch {
                 PrimitiveBatch::Shadows(range) => self.draw_shadows(range.start, range.len()),
                 PrimitiveBatch::Quads(range) => self.draw_quads(range.start, range.len()),
-                PrimitiveBatch::BackdropBlurRects(range) => self.draw_backdrop_blur_rects(
-                    &scene.backdrop_blur_rects[range.clone()],
-                    range.start,
-                    range.len(),
-                ),
+                PrimitiveBatch::BackdropBlurRects(range) => {
+                    self.draw_backdrop_blur_rects(range.start, range.len())
+                }
                 PrimitiveBatch::Paths(range) => {
                     let paths = &scene.paths[range];
                     self.draw_paths_to_intermediate(paths)?;
@@ -646,41 +646,15 @@ impl DirectXRenderer {
         )
     }
 
-    fn draw_backdrop_blur_rects(
-        &mut self,
-        backdrop_blur_rects: &[BackdropBlurRect],
-        start: usize,
-        len: usize,
-    ) -> Result<()> {
+    fn draw_backdrop_blur_rects(&mut self, start: usize, len: usize) -> Result<()> {
         if len == 0 {
             return Ok(());
         }
 
         self.ensure_backdrop_blur_resources()?;
         self.copy_backdrop_blur_snapshot()?;
-
-        let mut run_start = 0;
-        while run_start < len {
-            let kernel_levels = backdrop_blur_rects[run_start].effective_kernel_levels() as usize;
-            let run_end = backdrop_blur_rects[run_start..]
-                .iter()
-                .position(|backdrop_blur_rect| {
-                    backdrop_blur_rect.effective_kernel_levels() as usize != kernel_levels
-                })
-                .map_or(len, |offset| run_start + offset);
-
-            if kernel_levels > 0 {
-                self.build_backdrop_blur_texture(kernel_levels)?;
-            }
-            self.composite_backdrop_blur_rects(
-                start + run_start,
-                run_end - run_start,
-                kernel_levels,
-            )?;
-            run_start = run_end;
-        }
-
-        Ok(())
+        self.build_backdrop_blur_texture()?;
+        self.composite_backdrop_blur_rects(start, len)
     }
 
     fn ensure_backdrop_blur_resources(&mut self) -> Result<()> {
@@ -718,8 +692,7 @@ impl DirectXRenderer {
         Ok(())
     }
 
-    fn build_backdrop_blur_texture(&self, kernel_levels: usize) -> Result<()> {
-        let levels = kernel_levels.clamp(1, BLUR_TEXTURE_LEVELS);
+    fn build_backdrop_blur_texture(&self) -> Result<()> {
         let devices = self.devices.as_ref().context("devices missing")?;
         let resources = self.resources.as_ref().context("resources missing")?;
         let blur_resources = resources
@@ -733,7 +706,7 @@ impl DirectXRenderer {
             &blur_resources.textures[0],
         )?;
 
-        for level in 1..levels {
+        for level in 1..BLUR_TEXTURE_LEVELS {
             self.draw_blur_pass(
                 &self.pipelines.blur_downsample_pipeline,
                 &blur_resources.textures[level - 1].srv,
@@ -741,7 +714,7 @@ impl DirectXRenderer {
             )?;
         }
 
-        for level in (1..levels).rev() {
+        for level in (1..BLUR_TEXTURE_LEVELS).rev() {
             self.draw_blur_pass(
                 &self.pipelines.blur_upsample_pipeline,
                 &blur_resources.textures[level].srv,
@@ -781,24 +754,14 @@ impl DirectXRenderer {
         )
     }
 
-    fn composite_backdrop_blur_rects(
-        &mut self,
-        start: usize,
-        len: usize,
-        kernel_levels: usize,
-    ) -> Result<()> {
+    fn composite_backdrop_blur_rects(&mut self, start: usize, len: usize) -> Result<()> {
         let devices = self.devices.as_ref().context("devices missing")?;
         let resources = self.resources.as_ref().context("resources missing")?;
         let blur_resources = resources
             .backdrop_blur_resources
             .as_ref()
             .context("missing backdrop blur resources")?;
-        let backdrop_texture = if kernel_levels == 0 {
-            &blur_resources.snapshot_srv
-        } else {
-            &blur_resources.textures[0].srv
-        };
-        let backdrop_texture = slice::from_ref(backdrop_texture);
+        let backdrop_texture = slice::from_ref(&blur_resources.textures[0].srv);
         let original_texture = slice::from_ref(&blur_resources.snapshot_srv);
         let fragment_textures = [(0, backdrop_texture), (2, original_texture)];
 

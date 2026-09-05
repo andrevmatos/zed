@@ -1360,3 +1360,123 @@ fn fs_surface(input: SurfaceVarying) -> @location(0) vec4<f32> {
 
     return ycbcr_to_RGB * y_cb_cr;
 }
+
+// --- backdrop blur --- //
+
+// Source texture for the downsample/upsample passes, bound from the snapshot or
+// a pyramid level with the `texture` layout at group(1).
+@group(1) @binding(0) var t_blur_source: texture_2d<f32>;
+@group(1) @binding(1) var s_blur: sampler;
+// Unblurred snapshot, bound alongside the blurred pyramid for the composite pass.
+@group(3) @binding(0) var t_backdrop_original: texture_2d<f32>;
+
+struct BackdropBlurRect {
+    order: u32,
+    pad: u32,
+    bounds: Bounds,
+    content_mask: Bounds,
+    corner_radii: Corners,
+    opacity: f32,
+    end_pad: u32,
+}
+
+fn clamp_premultiplied(color: vec4<f32>) -> vec4<f32> {
+    let alpha = saturate(color.a);
+    return vec4<f32>(clamp(color.rgb, vec3<f32>(0.0), vec3<f32>(alpha)), alpha);
+}
+
+struct BlurPassVarying {
+    @builtin(position) position: vec4<f32>,
+    @location(0) texture_position: vec2<f32>,
+}
+
+@vertex
+fn vs_backdrop_blur_pass(@builtin(vertex_index) vertex_id: u32) -> BlurPassVarying {
+    let unit_vertex = vec2<f32>(f32(vertex_id & 1u), 0.5 * f32(vertex_id & 2u));
+    var out: BlurPassVarying;
+    out.position = vec4<f32>(unit_vertex * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0), 0.0, 1.0);
+    out.texture_position = unit_vertex;
+    return out;
+}
+
+@fragment
+fn fs_backdrop_blur_downsample(input: BlurPassVarying) -> @location(0) vec4<f32> {
+    let texel = 1.0 / vec2<f32>(textureDimensions(t_blur_source));
+    let uv = input.texture_position;
+
+    var color = textureSample(t_blur_source, s_blur, uv) * 0.25;
+    color += textureSample(t_blur_source, s_blur, uv + texel * vec2<f32>(-1.0,  0.0)) * 0.125;
+    color += textureSample(t_blur_source, s_blur, uv + texel * vec2<f32>( 1.0,  0.0)) * 0.125;
+    color += textureSample(t_blur_source, s_blur, uv + texel * vec2<f32>( 0.0, -1.0)) * 0.125;
+    color += textureSample(t_blur_source, s_blur, uv + texel * vec2<f32>( 0.0,  1.0)) * 0.125;
+    color += textureSample(t_blur_source, s_blur, uv + texel * vec2<f32>(-1.0, -1.0)) * 0.0625;
+    color += textureSample(t_blur_source, s_blur, uv + texel * vec2<f32>( 1.0, -1.0)) * 0.0625;
+    color += textureSample(t_blur_source, s_blur, uv + texel * vec2<f32>(-1.0,  1.0)) * 0.0625;
+    color += textureSample(t_blur_source, s_blur, uv + texel * vec2<f32>( 1.0,  1.0)) * 0.0625;
+    return clamp_premultiplied(color);
+}
+
+@fragment
+fn fs_backdrop_blur_upsample(input: BlurPassVarying) -> @location(0) vec4<f32> {
+    let texel = 1.0 / vec2<f32>(textureDimensions(t_blur_source));
+    let uv = input.texture_position;
+
+    var color = textureSample(t_blur_source, s_blur, uv) * 0.125;
+    color += textureSample(t_blur_source, s_blur, uv + texel * vec2<f32>(-1.0,  0.0)) * 0.0625;
+    color += textureSample(t_blur_source, s_blur, uv + texel * vec2<f32>( 1.0,  0.0)) * 0.0625;
+    color += textureSample(t_blur_source, s_blur, uv + texel * vec2<f32>( 0.0, -1.0)) * 0.0625;
+    color += textureSample(t_blur_source, s_blur, uv + texel * vec2<f32>( 0.0,  1.0)) * 0.0625;
+    color += textureSample(t_blur_source, s_blur, uv + texel * vec2<f32>(-1.0, -1.0)) * 0.0625;
+    color += textureSample(t_blur_source, s_blur, uv + texel * vec2<f32>( 1.0, -1.0)) * 0.0625;
+    color += textureSample(t_blur_source, s_blur, uv + texel * vec2<f32>(-1.0,  1.0)) * 0.0625;
+    color += textureSample(t_blur_source, s_blur, uv + texel * vec2<f32>( 1.0,  1.0)) * 0.0625;
+    color += textureSample(t_blur_source, s_blur, uv + texel * vec2<f32>(-2.0,  0.0)) * 0.046875;
+    color += textureSample(t_blur_source, s_blur, uv + texel * vec2<f32>( 2.0,  0.0)) * 0.046875;
+    color += textureSample(t_blur_source, s_blur, uv + texel * vec2<f32>( 0.0, -2.0)) * 0.046875;
+    color += textureSample(t_blur_source, s_blur, uv + texel * vec2<f32>( 0.0,  2.0)) * 0.046875;
+    color += textureSample(t_blur_source, s_blur, uv + texel * vec2<f32>(-2.0, -2.0)) * 0.046875;
+    color += textureSample(t_blur_source, s_blur, uv + texel * vec2<f32>( 2.0, -2.0)) * 0.046875;
+    color += textureSample(t_blur_source, s_blur, uv + texel * vec2<f32>(-2.0,  2.0)) * 0.046875;
+    color += textureSample(t_blur_source, s_blur, uv + texel * vec2<f32>( 2.0,  2.0)) * 0.046875;
+    return clamp_premultiplied(color);
+}
+
+struct BackdropBlurRectVarying {
+    @builtin(position) position: vec4<f32>,
+    @location(0) @interpolate(flat) blur_rect_id: u32,
+    @location(1) texture_position: vec2<f32>,
+    // TODO: use `clip_distance` once Naga supports it
+    @location(2) clip_distances: vec4<f32>,
+}
+
+@vertex
+fn vs_backdrop_blur_rect(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index) instance_id: u32) -> BackdropBlurRectVarying {
+    let unit_vertex = vec2<f32>(f32(vertex_id & 1u), 0.5 * f32(vertex_id & 2u));
+    let blur_rect = load_backdrop_blur_rect(instance_id);
+
+    var out: BackdropBlurRectVarying;
+    let position = unit_vertex * vec2<f32>(blur_rect.bounds.size) + blur_rect.bounds.origin;
+    out.position = to_device_position(unit_vertex, blur_rect.bounds);
+    out.texture_position = position / globals.viewport_size;
+    out.blur_rect_id = instance_id;
+    out.clip_distances = distance_from_clip_rect(unit_vertex, blur_rect.bounds, blur_rect.content_mask);
+    return out;
+}
+
+@fragment
+fn fs_backdrop_blur_rect(input: BackdropBlurRectVarying) -> @location(0) vec4<f32> {
+    let blur_rect = load_backdrop_blur_rect(input.blur_rect_id);
+
+    let shape_alpha = saturate(0.5 - quad_sdf(input.position.xy, blur_rect.bounds, blur_rect.corner_radii));
+    // Content-mask clipping folds into the coverage: outside the mask the original
+    // backdrop sample is written back unchanged, preserving it under replace blending.
+    let mask_alpha = min(
+        min(saturate(input.clip_distances.x), saturate(input.clip_distances.y)),
+        min(saturate(input.clip_distances.z), saturate(input.clip_distances.w))
+    );
+
+    let original = textureSample(t_backdrop_original, s_sprite, input.texture_position);
+    let blurred = textureSample(t_sprite, s_sprite, input.texture_position);
+    let coverage = shape_alpha * mask_alpha * saturate(blur_rect.opacity);
+    return clamp_premultiplied(mix(original, blurred, coverage));
+}

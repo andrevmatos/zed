@@ -292,6 +292,18 @@ impl Theme {
         self.styles.window_background_appearance
     }
 
+    /// Returns whether the theme's window background is composited with OS-level
+    /// blur, in which case translucent surfaces apply a backdrop blur to stay
+    /// legible over content rendered behind them.
+    pub fn uses_backdrop_blur(&self) -> bool {
+        matches!(
+            self.window_background_appearance(),
+            WindowBackgroundAppearance::Blurred
+                | WindowBackgroundAppearance::MicaBackdrop
+                | WindowBackgroundAppearance::MicaAltBackdrop
+        )
+    }
+
     /// Darkens the color by reducing its lightness.
     /// The resulting lightness is clamped to ensure it doesn't go below 0.0.
     ///

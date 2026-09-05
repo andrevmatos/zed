@@ -262,11 +262,6 @@ float4 clamp_premultiplied(float4 color) {
     return color;
 }
 
-float4 over_straight_on_premultiplied(float4 below, float4 above) {
-    above = float4(above.rgb * above.a, above.a);
-    return clamp_premultiplied(above + below * (1.0 - above.a));
-}
-
 float2 to_tile_position(float2 unit_vertex, AtlasTile tile) {
     float2 atlas_size;
     t_sprite.GetDimensions(atlas_size.x, atlas_size.y);
@@ -871,9 +866,8 @@ struct BlurRect {
     Bounds bounds;
     Bounds content_mask;
     Corners corner_radii;
-    float blur_radius;
     float opacity;
-    Hsla tint;
+    uint end_pad;
 };
 
 struct BlurPassVertexOutput {
@@ -972,12 +966,8 @@ float4 blur_rect_fragment(BlurRectVertexOutput input): SV_Target {
 
     float4 original = t_backdrop_original.Sample(s_sprite, input.texture_position);
     float4 blurred = t_sprite.Sample(s_sprite, input.texture_position);
-    float4 tint = hsla_to_rgba(blur_rect.tint);
-    float4 tinted = tint.a > 0.0
-        ? over_straight_on_premultiplied(blurred, tint)
-        : blurred;
     float coverage = shape_alpha * saturate(blur_rect.opacity);
-    return clamp_premultiplied(lerp(original, tinted, coverage));
+    return clamp_premultiplied(lerp(original, blurred, coverage));
 }
 
 /*

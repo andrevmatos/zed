@@ -61,12 +61,12 @@ use futures::{
 };
 use gpui::{
     Action, AnyEntity, AnyView, AnyWeakView, App, AppContext, AsyncApp, AsyncWindowContext, Axis,
-    BackdropBlurEffect, Bounds, ClipboardItem, Context, CursorStyle, Decorations, DragMoveEvent,
-    Entity, EntityId, EventEmitter, FocusHandle, Focusable, Global, HitboxBehavior, Hsla,
-    KeyContext, Keystroke, ManagedView, MouseButton, PathPromptOptions, Point, PromptLevel, Render,
-    ResizeEdge, Size, Stateful, Subscription, SystemWindowTabController, Task, TaskExt, Tiling,
-    WeakEntity, WindowBounds, WindowHandle, WindowId, WindowOptions, actions, canvas, point,
-    relative, size, transparent_black,
+    Bounds, ClipboardItem, Context, CursorStyle, Decorations, DragMoveEvent, Entity, EntityId,
+    EventEmitter, FocusHandle, Focusable, Global, HitboxBehavior, Hsla, KeyContext, Keystroke,
+    ManagedView, MouseButton, PathPromptOptions, Point, PromptLevel, Render, ResizeEdge, Size,
+    Stateful, Subscription, SystemWindowTabController, Task, TaskExt, Tiling, WeakEntity,
+    WindowBounds, WindowHandle, WindowId, WindowOptions, actions, canvas, point, relative, size,
+    transparent_black,
 };
 pub use history_manager::*;
 pub use item::{
@@ -9303,13 +9303,7 @@ impl Render for Workspace {
 
         let theme = cx.theme().clone();
         let colors = theme.colors();
-        let zoomed_panel_has_backdrop_blur = self.zoomed.is_some()
-            && matches!(
-                theme.window_background_appearance(),
-                gpui::WindowBackgroundAppearance::Blurred
-                    | gpui::WindowBackgroundAppearance::MicaBackdrop
-                    | gpui::WindowBackgroundAppearance::MicaAltBackdrop
-            );
+        let zoomed_panel_has_backdrop_blur = self.zoomed.is_some() && theme.uses_backdrop_blur();
         let notification_entities = self
             .notifications
             .iter()
@@ -9719,11 +9713,7 @@ impl Render for Workspace {
                                 let blur = canvas(
                                     |_, _, _| (),
                                     |bounds, _, window, _| {
-                                        window.paint_backdrop_blur_rect(
-                                            bounds,
-                                            Default::default(),
-                                            BackdropBlurEffect::new(px(20.)),
-                                        );
+                                        window.paint_backdrop_blur_rect(bounds, Default::default());
                                     },
                                 )
                                 .absolute()
@@ -9732,12 +9722,10 @@ impl Render for Workspace {
                                     blur
                                 } else {
                                     match self.zoomed_position {
-                                        Some(DockPosition::Left) => blur.right_2().border_r_1(),
-                                        Some(DockPosition::Right) => blur.left_2().border_l_1(),
-                                        Some(DockPosition::Bottom) => blur.top_2().border_t_1(),
-                                        None => {
-                                            blur.top_2().bottom_2().left_2().right_2().border_1()
-                                        }
+                                        Some(DockPosition::Left) => blur.right_2(),
+                                        Some(DockPosition::Right) => blur.left_2(),
+                                        Some(DockPosition::Bottom) => blur.top_2(),
+                                        None => blur.top_2().bottom_2().left_2().right_2(),
                                     }
                                 };
                                 this.child(blur)
